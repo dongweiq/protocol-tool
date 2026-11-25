@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>协议解析工具 v0.2 团队版</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+  header { background: #1f2733; color: #fff; padding: 12px 16px; font-size: 17px; font-weight: 600; }
+  header small { font-weight: 400; color: #9fb0c3; margin-left: 8px; font-size: 12px; }
+  main { max-width: 900px; margin: 0 auto; padding: 14px; }
+  section { background: #fff; border: 1px solid #e2e5ea; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  h3 { margin: 2px 0 10px; font-size: 15px; }
+  textarea, input { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid #ccd2da; border-radius: 8px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  button { padding: 7px 14px; border: 1px solid #c3cad4; background: #fff; border-radius: 8px; cursor: pointer; font-size: 13px; margin: 4px 4px 4px 0; }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .muted { color: #68707c; font-size: 12px; }
+  #log { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.65; max-height: 340px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  .frame { border-top: 1px dashed #e2e5ea; padding: 7px 0; }
+  .bad { color: #c0392b; }
+  .ok { color: #1e7d32; }
+  .raw { color: #68707c; }
+  #config { min-height: 170px; }
+  #hexIn { min-height: 52px; }
+  .status { font-size: 12.5px; color: #444; }
+</style>
+</head>
+<body>
+<header>协议解析工具 <small>v0.2 团队版 · 配置驱动 · 数据只在本机处理</small></header>
+<main>
+  <section>
+    <h3>1. 连接设备（可选，先用模拟或粘贴也能跑通全流程）</h3>
+    <div class="row">
+      <button id="btnSerial">连接串口 (Web Serial)</button>
+      <button id="btnBle">连接蓝牙 BLE</button>
+      <button id="btnSim" class="primary">开始模拟设备发送</button>
+      <span class="status" id="connStatus">未连接</span>
+    </div>
+    <div class="muted">串口和蓝牙需要用电脑 Chrome 打开本页面并由你点击授权；模拟模式会按当前配置随机生成状态帧，方便先把工具用起来。</div>
+  </section>
+
+  <section>
+    <h3>2. 粘贴一帧十六进制</h3>
+    <textarea id="hexIn">AA 55 07 21 DC 05 6D 01 57 01 88 D2</textarea>
+    <div class="row"><button id="btnParse" class="primary">解析这一帧</button><button id="btnClear">清空记录</button></div>
+  </section>
+
+  <section>
+    <h3>3. 解析结果（原始帧与字段对照）</h3>
+    <div id="log"></div>
+  </section>
+
+  <section>
+    <h3>4. 录制与回放</h3>
+    <div class="row">
+      <button id="btnRecord">开始录制</button>
+      <button id="btnReplay" disabled>回放录制</button>
+      <span class="status" id="recStatus">未录制</span>
+    </div>
+    <div class="muted">联调时打开录制，所有收到的帧都会存下来；回去点回放就能重现当时的解析过程，方便复盘和发给别人复现问题。</div>
+  </section>
+
+  <section>
+    <h3>5. 协议配置（JSON，改完点应用，换设备就换这份配置）</h3>
+    <textarea id="config" spellcheck="false"></textarea>
+    <div class="row"><button id="btnApply" class="primary">应用配置</button><button id="btnResetCfg">恢复示例配置</button><span class="status" id="cfgStatus"></span></div>
+  </section>
+
+  <section>
+    <h3>6. 团队版：一处配置，多处生成（改协议只改配置，三端代码和文档重新生成，永远一致）</h3>
+    <div class="row">
+      <button data-gen="js" class="primary">生成 JS 解析代码</button>
+      <button data-gen="py" class="primary">生成 Python 解析代码</button>
+      <button data-gen="c" class="primary">生成 C 解析代码（固件端）</button>
+      <button data-gen="md" class="primary">生成协议文档</button>
+      <button id="btnDownload" disabled>下载生成结果</button>
+    </div>
+    <textarea id="genOut" spellcheck="false" style="min-height:200px;" placeholder="点上面的按钮，这里会生成可直接使用的代码或文档"></textarea>
+  </section>
+
+  <section>
+    <h3>7. 协议库（团队共享的协议都存在这里，存在本机浏览器里）</h3>
+    <div class="row">
+      <input id="libName" placeholder="配置名称，如：机器人主控协议" style="flex:2;min-width:160px;">
+      <input id="libVer" placeholder="版本备注，如：v3 温度改除以10" style="flex:2;min-width:160px;">
+      <button id="btnLibSave" class="primary">把当前配置存入协议库</button>
+    </div>
+    <div id="libList" style="margin-top:8px;"></div>
+  </section>
+</main>
+<script>
+/*__CONFIG__*/
+/*__PARSER__*/
+/*__CODEGEN__*/
+
+// ---------- 工具状态 ----------
+let config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+let recording = false;
+let recorded = [];   // [{bytes:[...], at: timestamp}]
+let simTimer = null;
+let replayTimer = null;
+
+const $ = id => document.getElementById(id);
+$("config").value = JSON.stringify(DEFAULT_CONFIG, null, 2);
+
+function toHex(bytes) { return bytes.map(b => b.toString(16).toUpperCase().padStart(2, "0")).join(" "); }
+
+function render(bytes) {
+  const r = parseFrame(config, bytes);
+  const div = document.createElement("div");
+  div.className = "frame";
+  let html = `<span class="raw">${new Date().toLocaleTimeString()}  ${toHex(bytes)}</span>\n`;
+  if (r.commandName) html += `命令：${r.commandName}（${r.command}）  校验：${r.checksumOk ? '<span class="ok">通过</span>' : '<span class="bad">失败</span>'}\n`;
+  for (const f of r.fields) {
+    const val = Array.isArray(f.value) ? (f.value.join("、") || "无") : f.value;
+    html += `  ${f.name} = ${val}${f.unit ? " " + f.unit : ""}  <span class="raw">(原始 ${f.raw})</span>\n`;
+  }
+  for (const e of r.errors) html += `<span class="bad">  ⚠ ${e}</span>\n`;
+  div.innerHTML = html;
+  const log = $("log");
+  log.prepend(div);
+  while (log.children.length > 200) log.lastChild.remove();
+  if (recording) { recorded.push({ bytes: [...bytes], at: Date.now() }); $("recStatus").textContent = `录制中，已录 ${recorded.length} 帧`; $("btnReplay").disabled = recorded.length === 0; }
+  return r;
+}
+
+function parseHexInput() {
+  const parts = $("hexIn").value.trim().split(/[\s,]+/).filter(Boolean);
+  const bytes = parts.map(x => parseInt(x, 16));
+  if (bytes.some(isNaN)) { alert("有无法识别的十六进制字节，请检查输入"); return; }
+  render(bytes);
+}
+$("btnParse").addEventListener("click", parseHexInput);
+$("btnClear").addEventListener("click", () => { $("log").innerHTML = ""; });
+
+// ---------- 模拟设备：按配置随机生成 0x21 状态帧 ----------
+function buildSimFrame() {
+  const speed = Math.floor(1200 + Math.random() * 600);
+  const tempRaw = Math.floor(330 + Math.random() * 60); // 33.0 ~ 39.0 ℃
+  const batt = Math.floor(70 + Math.random() * 30);
+  const flags = Math.random() < 0.15 ? 0x05 : 0x01;
+  const body = [0xAA, 0x55, 0x07, 0x21, speed & 0xFF, (speed >> 8) & 0xFF, tempRaw & 0xFF, (tempRaw >> 8) & 0xFF, batt, flags];
+  const crc = crc16Modbus(body);
+  return [...body, crc & 0xFF, (crc >> 8) & 0xFF];
+}
+$("btnSim").addEventListener("click", () => {
+  if (simTimer) { clearInterval(simTimer); simTimer = null; $("btnSim").textContent = "开始模拟设备发送"; $("connStatus").textContent = "未连接"; return; }
+  $("connStatus").textContent = "模拟设备发送中（每秒一帧）";
+  $("btnSim").textContent = "停止模拟";
+  render(buildSimFrame());
+  simTimer = setInterval(() => render(buildSimFrame()), 1000);
+});
+
+// ---------- 录制 / 回放 ----------
+$("btnRecord").addEventListener("click", () => {
+  recording = !recording;
+  $("btnRecord").textContent = recording ? "停止录制" : "开始录制";
+  if (recording) { recorded = []; $("recStatus").textContent = "录制中，已录 0 帧"; }
+  else $("recStatus").textContent = `录制结束，共 ${recorded.length} 帧`;
+  $("btnReplay").disabled = recorded.length === 0;
+});
+$("btnReplay").addEventListener("click", () => {
+  if (replayTimer || recorded.length === 0) return;
+  $("log").innerHTML = "";
+  let i = 0;
+  $("recStatus").textContent = `回放中 0/${recorded.length}`;
+  replayTimer = setInterval(() => {
+    if (i >= recorded.length) { clearInterval(replayTimer); replayTimer = null; $("recStatus").textContent = `回放完成，共 ${recorded.length} 帧`; return; }
+    const wasRecording = recording; recording = false;
+    render(recorded[i].bytes);
+    recording = wasRecording;
+    i++;
+    $("recStatus").textContent = `回放中 ${i}/${recorded.length}`;
+  }, 500);
+});
+
+// ---------- 配置 ----------
+$("btnApply").addEventListener("click", () => {
+  try {
+    config = JSON.parse($("config").value);
+    $("cfgStatus").textContent = "配置已应用：" + (config.name || "未命名");
+  } catch (e) { $("cfgStatus").textContent = "配置 JSON 有误：" + e.message; }
+});
+$("btnResetCfg").addEventListener("click", () => {
+  config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  $("config").value = JSON.stringify(DEFAULT_CONFIG, null, 2);
+  $("cfgStatus").textContent = "已恢复示例配置";
+});
+
+// ---------- 流式拆帧：按帧头找帧，按长度字段切帧 ----------
+function makeFrameSplitter(onFrame) {
+  let buf = [];
+  return function feed(chunk) {
+    buf.push(...chunk);
+    const header = (config.frame && config.frame.header) || [];
+    while (buf.length >= 4) {
+      const idx = header.length ? indexOfSub(buf, header) : 0;
+      if (idx === -1) { buf = header.length ? buf.slice(-(header.length - 1)) : []; return; }
+      if (idx > 0) buf = buf.slice(idx);
+      const lf = config.frame.lengthField;
+      const csSize = (config.frame.checksum && config.frame.checksum.size) || 0;
+      const lenVal = buf[lf.offset];
+      const total = config.commandField.offset + lenVal + csSize;
+      if (buf.length < total) return;
+      onFrame(buf.slice(0, total));
+      buf = buf.slice(total);
+    }
+  };
+}
+function indexOfSub(arr, sub) {
+  outer: for (let i = 0; i + sub.length <= arr.length; i++) {
+    for (let j = 0; j < sub.length; j++) if (arr[i + j] !== sub[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+// ---------- Web Serial ----------
+$("btnSerial").addEventListener("click", async () => {
+  if (!("serial" in navigator)) { alert("当前浏览器不支持 Web Serial，请用电脑版 Chrome 打开"); return; }
+  try {
+    const port = await navigator.serial.requestPort();
+    const baud = parseInt(prompt("波特率", "115200") || "115200", 10);
+    await port.open({ baudRate: baud });
+    $("connStatus").textContent = "串口已连接，接收中";
+    const feed = makeFrameSplitter(render);
+    const reader = port.readable.getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) feed([...value]);
+    }
+  } catch (e) { $("connStatus").textContent = "串口连接失败或已取消：" + e.message; }
+});
+
+// ---------- Web Bluetooth (BLE) ----------
+$("btnBle").addEventListener("click", async () => {
+  if (!("bluetooth" in navigator)) { alert("当前浏览器不支持 Web Bluetooth，请用电脑版 Chrome 打开"); return; }
+  try {
+    const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [0xFFE0, 0xFFF0, "6e400001-b5a3-f393-e0a9-e50e24dcca9e"] });
+    const server = await device.gatt.connect();
+    $("connStatus").textContent = "蓝牙已连接：" + (device.name || device.id) + "，正在查找可通知特征值…";
+    const services = await server.getPrimaryServices();
+    const feed = makeFrameSplitter(render);
+    let found = 0;
+    for (const svc of services) {
+      const chars = await svc.getCharacteristics();
+      for (const ch of chars) {
+        if (ch.properties.notify || ch.properties.indicate) {
+          await ch.startNotifications();
+          ch.addEventListener("characteristicvaluechanged", ev => {
+            feed([...new Uint8Array(ev.target.value.buffer)]);
+          });
+          found++;
+        }
+      }
+    }
+    $("connStatus").textContent = found ? `蓝牙已连接，已订阅 ${found} 个通知特征值，接收中` : "蓝牙已连接，但没找到可通知的特征值，需要按你的设备指定服务和特征值 UUID";
+  } catch (e) { $("connStatus").textContent = "蓝牙连接失败或已取消：" + e.message; }
+});
+
+// ---------- 代码生成 ----------
+let genFilename = "";
+document.querySelectorAll("[data-gen]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    try { config = JSON.parse($("config").value); } catch (e) { alert("当前配置 JSON 有误，先修正再生成"); return; }
+    const kind = btn.getAttribute("data-gen");
+    const base = (config.name || "protocol").replace(/[^\w一-龥-]+/g, "_");
+    if (kind === "js") { $("genOut").value = generateJS(config); genFilename = base + ".parser.js"; }
+    if (kind === "py") { $("genOut").value = generatePython(config); genFilename = base + ".parser.py"; }
+    if (kind === "c") { $("genOut").value = generateC(config); genFilename = base + ".parser.c"; }
+    if (kind === "md") { $("genOut").value = generateMarkdown(config); genFilename = base + ".md"; }
+    $("btnDownload").disabled = false;
+  });
+});
+$("btnDownload").addEventListener("click", () => {
+  const blob = new Blob([$("genOut").value], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = genFilename || "generated.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// ---------- 协议库（localStorage） ----------
+const LIB_KEY = "protocolToolLibraryV1";
+function libLoad() { try { return JSON.parse(localStorage.getItem(LIB_KEY) || "[]"); } catch (e) { return []; } }
+function libSaveAll(list) { localStorage.setItem(LIB_KEY, JSON.stringify(list)); }
+function libRender() {
+  const list = libLoad();
+  const box = $("libList");
+  if (!list.length) { box.innerHTML = '<span class="muted">协议库还是空的。把配置调好后，起个名字存进来，团队里其他人打开就能切换使用。</span>'; return; }
+  box.innerHTML = "";
+  list.forEach((item, idx) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.borderTop = "1px dashed #e2e5ea";
+    row.style.padding = "6px 0";
+    const label = document.createElement("span");
+    label.style.flex = "1";
+    label.textContent = `${item.name}　${item.ver || ""}　（${item.savedAt}）`;
+    const btnUse = document.createElement("button");
+    btnUse.textContent = "切换到这份";
+    btnUse.addEventListener("click", () => {
+      config = JSON.parse(JSON.stringify(item.config));
+      $("config").value = JSON.stringify(config, null, 2);
+      $("cfgStatus").textContent = "已切换到协议库配置：" + item.name;
+    });
+    const btnDel = document.createElement("button");
+    btnDel.textContent = "删除";
+    btnDel.addEventListener("click", () => { const l = libLoad(); l.splice(idx, 1); libSaveAll(l); libRender(); });
+    row.append(label, btnUse, btnDel);
+    box.appendChild(row);
+  });
+}
+$("btnLibSave").addEventListener("click", () => {
+  let cfg;
+  try { cfg = JSON.parse($("config").value); } catch (e) { alert("当前配置 JSON 有误，无法存入"); return; }
+  const name = $("libName").value.trim() || cfg.name || "未命名协议";
+  const list = libLoad();
+  list.unshift({ name, ver: $("libVer").value.trim(), savedAt: new Date().toLocaleString(), config: cfg });
+  libSaveAll(list);
+  libRender();
+});
+libRender();
+
+// 打开页面先把演示帧解析出来，让用户立刻看到效果
+render([0xAA, 0x55, 0x07, 0x21, 0xDC, 0x05, 0x6D, 0x01, 0x57, 0x01, 0x88, 0xD2]);
+</script>
+</body>
+</html>
