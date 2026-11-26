@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>协议解析工具 v0.2 团队版</title>
+<title>协议解析工具 v0.3 团队版</title>
 <style>
   body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
   header { background: #1f2733; color: #fff; padding: 12px 16px; font-size: 17px; font-weight: 600; }
@@ -28,7 +28,7 @@
 </style>
 </head>
 <body>
-<header>协议解析工具 <small>v0.2 团队版 · 配置驱动 · 数据只在本机处理</small></header>
+<header>协议解析工具 <small>v0.3 团队版 · 配置驱动 · 数据只在本机处理</small></header>
 <main>
   <section>
     <h3>1. 连接设备（可选，先用模拟或粘贴也能跑通全流程）</h3>
@@ -89,17 +89,49 @@
     </div>
     <div id="libList" style="margin-top:8px;"></div>
   </section>
+
+  <section>
+    <h3>8. 协议文档导入（CSV 字段表 -> 协议配置）</h3>
+    <p class="hint">把 Excel 协议表另存为 CSV（UTF-8）后把内容粘到这里，一键生成配置草稿。表头认中英文：命令、命令名称、字段、类型、大小端、倍率、偏移、单位、枚举、位定义。枚举和位定义写成 0=关;1=开 这种格式。帧头默认 AA 55、校验默认 CRC16-Modbus，导入后可在第 5 块改。</p>
+    <textarea id="csvIn" spellcheck="false" style="min-height:120px;" placeholder="把 CSV 内容粘到这里，或点右边按钮先看示例"></textarea>
+    <div class="row">
+      <button id="btnCsvSample">填入示例 CSV</button>
+      <button id="btnCsvImport" class="primary">导入并生成配置</button>
+      <span id="csvStatus" class="hint"></span>
+    </div>
+  </section>
+
+  <section>
+    <h3>9. 拼帧发送（按字段值生成一帧，可直接发给设备）</h3>
+    <div class="row">
+      <select id="sendCmd" style="flex:1;min-width:140px;"></select>
+      <button id="btnSendFill">按所选命令生成字段值模板</button>
+    </div>
+    <textarea id="sendVals" spellcheck="false" style="min-height:90px;" placeholder="字段值 JSON：数字直接写数值；枚举可写标签如 "开"；状态位写标签数组如 ["运行"]"></textarea>
+    <div class="row">
+      <button id="btnBuild" class="primary">拼帧</button>
+      <button id="btnSendSerial">通过串口发送</button>
+      <button id="btnSendBle">通过蓝牙发送</button>
+      <span id="sendStatus" class="hint"></span>
+    </div>
+    <div id="sendHex" class="frame" style="margin-top:8px;">拼好的帧会显示在这里</div>
+  </section>
 </main>
 <script>
 /*__CONFIG__*/
 /*__PARSER__*/
 /*__CODEGEN__*/
+/*__ENCODER__*/
+/*__IMPORTER__*/
+/*__VALIDATE__*/
 
 // ---------- 工具状态 ----------
 let config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 let recording = false;
 let recorded = [];   // [{bytes:[...], at: timestamp}]
 let simTimer = null;
+let serialWriter = null;
+let bleWriter = null;
 let replayTimer = null;
 
 const $ = id => document.getElementById(id);
@@ -179,8 +211,12 @@ $("btnReplay").addEventListener("click", () => {
 // ---------- 配置 ----------
 $("btnApply").addEventListener("click", () => {
   try {
-    config = JSON.parse($("config").value);
-    $("cfgStatus").textContent = "配置已应用：" + (config.name || "未命名");
+    const parsed = JSON.parse($("config").value);
+    const errs = validateConfig(parsed);
+    if (errs.length) { $("cfgStatus").textContent = "配置有问题，未应用： " + errs.join("；"); return; }
+    config = parsed;
+    $("cfgStatus").textContent = "配置已应用（校验通过）：" + (config.name || "未命名");
+    refreshSendCmds();
   } catch (e) { $("cfgStatus").textContent = "配置 JSON 有误：" + e.message; }
 });
 $("btnResetCfg").addEventListener("click", () => {
@@ -224,7 +260,8 @@ $("btnSerial").addEventListener("click", async () => {
     const port = await navigator.serial.requestPort();
     const baud = parseInt(prompt("波特率", "115200") || "115200", 10);
     await port.open({ baudRate: baud });
-    $("connStatus").textContent = "串口已连接，接收中";
+    serialWriter = port.writable.getWriter();
+    $("connStatus").textContent = "串口已连接，接收中（也可以在第 9 块拼帧发送）";
     const feed = makeFrameSplitter(render);
     const reader = port.readable.getReader();
     while (true) {
@@ -248,6 +285,7 @@ $("btnBle").addEventListener("click", async () => {
     for (const svc of services) {
       const chars = await svc.getCharacteristics();
       for (const ch of chars) {
+        if (!bleWriter && (ch.properties.write || ch.properties.writeWithoutResponse)) bleWriter = ch;
         if (ch.properties.notify || ch.properties.indicate) {
           await ch.startNotifications();
           ch.addEventListener("characteristicvaluechanged", ev => {
@@ -260,6 +298,75 @@ $("btnBle").addEventListener("click", async () => {
     $("connStatus").textContent = found ? `蓝牙已连接，已订阅 ${found} 个通知特征值，接收中` : "蓝牙已连接，但没找到可通知的特征值，需要按你的设备指定服务和特征值 UUID";
   } catch (e) { $("connStatus").textContent = "蓝牙连接失败或已取消：" + e.message; }
 });
+
+// ---------- CSV 导入 ----------
+$("btnCsvSample").addEventListener("click", () => {
+  $("csvIn").value = ["命令,命令名称,字段,类型,大小端,倍率,偏移,单位,枚举,位定义",
+    "0x21,状态上报,电机转速,int16,little,,,,",
+    "0x21,状态上报,温度,int16,little,0.1,,℃,,",
+    "0x21,状态上报,电量,uint8,,,,%,,",
+    "0x21,状态上报,状态位,bits,,,,,,0=运行;1=故障;2=充电"].join("\n");
+});
+$("btnCsvImport").addEventListener("click", () => {
+  try {
+    const cfg = importCSV($("csvIn").value, {});
+    const errs = validateConfig(cfg);
+    if (errs.length) { $("csvStatus").textContent = "生成的配置有问题：" + errs.join("；"); return; }
+    config = cfg;
+    $("config").value = JSON.stringify(cfg, null, 2);
+    $("cfgStatus").textContent = "配置已应用（CSV 导入，校验通过）：" + (cfg.name || "");
+    $("csvStatus").textContent = "导入成功，共 " + Object.keys(cfg.commands).length + " 条命令，已填入第 5 块，可继续修改";
+    refreshSendCmds();
+  } catch (e) { $("csvStatus").textContent = "导入失败：" + e.message; }
+});
+
+// ---------- 拼帧发送 ----------
+function refreshSendCmds() {
+  const sel = $("sendCmd");
+  sel.innerHTML = "";
+  for (const [key, cmd] of Object.entries(config.commands || {})) {
+    const opt = document.createElement("option");
+    opt.value = key; opt.textContent = key + " " + (cmd.name || "");
+    sel.appendChild(opt);
+  }
+}
+function fillSendTemplate() {
+  const cmd = (config.commands || {})[$("sendCmd").value];
+  if (!cmd) return;
+  const obj = {};
+  for (const f of cmd.fields) {
+    if (f.type === "bits") obj[f.name] = [];
+    else if (f.type === "enum") obj[f.name] = f.choices ? Object.values(f.choices)[0] : 0;
+    else if (f.type === "bytes") obj[f.name] = new Array(f.size || 1).fill(0);
+    else obj[f.name] = 0;
+  }
+  $("sendVals").value = JSON.stringify(obj, null, 2);
+}
+$("btnSendFill").addEventListener("click", fillSendTemplate);
+$("sendCmd").addEventListener("change", fillSendTemplate);
+let lastBuilt = null;
+$("btnBuild").addEventListener("click", () => {
+  try {
+    const vals = JSON.parse($("sendVals").value || "{}");
+    lastBuilt = encodeFrame(config, $("sendCmd").value, vals);
+    $("sendHex").textContent = toHex(lastBuilt);
+    $("sendStatus").textContent = "已拼帧，共 " + lastBuilt.length + " 字节（长度与校验已自动计算）";
+  } catch (e) { $("sendStatus").textContent = "拼帧失败：" + e.message; }
+});
+$("btnSendSerial").addEventListener("click", async () => {
+  if (!lastBuilt) { $("sendStatus").textContent = "先点拼帧"; return; }
+  if (!serialWriter) { $("sendStatus").textContent = "串口还没连接，先点上方连接串口"; return; }
+  try { await serialWriter.write(new Uint8Array(lastBuilt)); $("sendStatus").textContent = "已通过串口发出 " + lastBuilt.length + " 字节"; }
+  catch (e) { $("sendStatus").textContent = "串口发送失败：" + e.message; }
+});
+$("btnSendBle").addEventListener("click", async () => {
+  if (!lastBuilt) { $("sendStatus").textContent = "先点拼帧"; return; }
+  if (!bleWriter) { $("sendStatus").textContent = "蓝牙还没连接，或该设备没有可写特征值"; return; }
+  try { await bleWriter.writeValue(new Uint8Array(lastBuilt)); $("sendStatus").textContent = "已通过蓝牙发出 " + lastBuilt.length + " 字节"; }
+  catch (e) { $("sendStatus").textContent = "蓝牙发送失败：" + e.message; }
+});
+refreshSendCmds();
+fillSendTemplate();
 
 // ---------- 代码生成 ----------
 let genFilename = "";

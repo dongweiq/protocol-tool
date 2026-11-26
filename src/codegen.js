@@ -2,9 +2,9 @@
 // 代码生成器：同一份协议配置 -> JS / Python / C 解析代码 + Markdown 协议文档
 // 这是团队版的核心：一处修改定义，三端代码和文档一起重新生成，永远一致。
 
-const TYPE_SIZE = { uint8: 1, int8: 1, uint16: 2, int16: 2, uint32: 4, int32: 4, float32: 4, enum: 1, bits: 1 };
+const CG_TYPE_SIZE = { uint8: 1, int8: 1, uint16: 2, int16: 2, uint32: 4, int32: 4, float32: 4, enum: 1, bits: 1 };
 
-function fieldSize(f) { return f.type === "bytes" ? f.size : TYPE_SIZE[f.type]; }
+function fieldSize(f) { return f.type === "bytes" ? f.size : CG_TYPE_SIZE[f.type]; }
 
 function layout(config, cmd) {
   let byteOffset = config.commandField.offset + config.commandField.size;

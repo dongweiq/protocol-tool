@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>协议解析工具 v0.2 团队版</title>
+<title>协议解析工具 v0.3 团队版</title>
 <style>
   body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
   header { background: #1f2733; color: #fff; padding: 12px 16px; font-size: 17px; font-weight: 600; }
@@ -28,7 +28,7 @@
 </style>
 </head>
 <body>
-<header>协议解析工具 <small>v0.2 团队版 · 配置驱动 · 数据只在本机处理</small></header>
+<header>协议解析工具 <small>v0.3 团队版 · 配置驱动 · 数据只在本机处理</small></header>
 <main>
   <section>
     <h3>1. 连接设备（可选，先用模拟或粘贴也能跑通全流程）</h3>
@@ -88,6 +88,33 @@
       <button id="btnLibSave" class="primary">把当前配置存入协议库</button>
     </div>
     <div id="libList" style="margin-top:8px;"></div>
+  </section>
+
+  <section>
+    <h3>8. 协议文档导入（CSV 字段表 -> 协议配置）</h3>
+    <p class="hint">把 Excel 协议表另存为 CSV（UTF-8）后把内容粘到这里，一键生成配置草稿。表头认中英文：命令、命令名称、字段、类型、大小端、倍率、偏移、单位、枚举、位定义。枚举和位定义写成 0=关;1=开 这种格式。帧头默认 AA 55、校验默认 CRC16-Modbus，导入后可在第 5 块改。</p>
+    <textarea id="csvIn" spellcheck="false" style="min-height:120px;" placeholder="把 CSV 内容粘到这里，或点右边按钮先看示例"></textarea>
+    <div class="row">
+      <button id="btnCsvSample">填入示例 CSV</button>
+      <button id="btnCsvImport" class="primary">导入并生成配置</button>
+      <span id="csvStatus" class="hint"></span>
+    </div>
+  </section>
+
+  <section>
+    <h3>9. 拼帧发送（按字段值生成一帧，可直接发给设备）</h3>
+    <div class="row">
+      <select id="sendCmd" style="flex:1;min-width:140px;"></select>
+      <button id="btnSendFill">按所选命令生成字段值模板</button>
+    </div>
+    <textarea id="sendVals" spellcheck="false" style="min-height:90px;" placeholder="字段值 JSON：数字直接写数值；枚举可写标签如 "开"；状态位写标签数组如 ["运行"]"></textarea>
+    <div class="row">
+      <button id="btnBuild" class="primary">拼帧</button>
+      <button id="btnSendSerial">通过串口发送</button>
+      <button id="btnSendBle">通过蓝牙发送</button>
+      <span id="sendStatus" class="hint"></span>
+    </div>
+    <div id="sendHex" class="frame" style="margin-top:8px;">拼好的帧会显示在这里</div>
   </section>
 </main>
 <script>
@@ -277,9 +304,9 @@ if (typeof module !== "undefined" && module.exports) {
 // 代码生成器：同一份协议配置 -> JS / Python / C 解析代码 + Markdown 协议文档
 // 这是团队版的核心：一处修改定义，三端代码和文档一起重新生成，永远一致。
 
-const TYPE_SIZE = { uint8: 1, int8: 1, uint16: 2, int16: 2, uint32: 4, int32: 4, float32: 4, enum: 1, bits: 1 };
+const CG_TYPE_SIZE = { uint8: 1, int8: 1, uint16: 2, int16: 2, uint32: 4, int32: 4, float32: 4, enum: 1, bits: 1 };
 
-function fieldSize(f) { return f.type === "bytes" ? f.size : TYPE_SIZE[f.type]; }
+function fieldSize(f) { return f.type === "bytes" ? f.size : CG_TYPE_SIZE[f.type]; }
 
 function layout(config, cmd) {
   let byteOffset = config.commandField.offset + config.commandField.size;
@@ -474,12 +501,267 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { generateJS, generatePython, generateC, generateMarkdown, layout };
 }
 
+"use strict";
+// 拼帧编码器：解析的逆操作。按配置 + 命令 + 字段值 -> 生成完整帧（含长度与校验）
+// 用途：工具里按字段发命令、模拟设备造数据、自动化测试生成用例。
+
+function encCrc16Modbus(bytes) {
+  let crc = 0xFFFF;
+  for (const b of bytes) {
+    crc ^= b;
+    for (let i = 0; i < 8; i++) crc = (crc & 1) ? ((crc >> 1) ^ 0xA001) : (crc >> 1);
+  }
+  return crc;
+}
+
+function encChecksum(type, bytes) {
+  if (type === "crc16_modbus") return encCrc16Modbus(bytes);
+  if (type === "sum8") return bytes.reduce((a, b) => (a + b) & 0xFF, 0);
+  if (type === "xor8") return bytes.reduce((a, b) => a ^ b, 0);
+  return 0;
+}
+
+const ENC_TYPE_SIZE = { uint8: 1, int8: 1, uint16: 2, int16: 2, uint32: 4, int32: 4, float32: 4, enum: 1, bits: 1 };
+
+function writeUint(buf, offset, value, size, bigEndian) {
+  let v = value >>> 0;
+  const bytes = [];
+  for (let i = 0; i < size; i++) { bytes.unshift(v & 0xFF); v >>>= 8; }
+  const ordered = bigEndian ? bytes : bytes.reverse();
+  ordered.forEach((b, i) => { buf[offset + i] = b; });
+}
+
+function fieldRawValue(field, value) {
+  if (field.type === "enum") {
+    if (typeof value === "string" && field.choices) {
+      const hit = Object.entries(field.choices).find(([, label]) => label === value);
+      if (hit) return parseInt(hit[0], 10);
+    }
+    return Number(value) || 0;
+  }
+  if (field.type === "bits") {
+    if (Array.isArray(value)) {
+      let raw = 0;
+      for (const [bit, label] of Object.entries(field.bits || {})) {
+        if (value.includes(label)) raw |= (1 << Number(bit));
+      }
+      return raw;
+    }
+    return Number(value) || 0;
+  }
+  const scale = field.scale ?? 1;
+  const off = field.offset ?? 0;
+  return Math.round((Number(value) - off) / scale);
+}
+
+function encodeFrame(config, cmdKey, values) {
+  const cmd = (config.commands || {})[cmdKey];
+  if (!cmd) throw new Error("未定义的命令 " + cmdKey);
+  const cs = config.frame.checksum || { type: "none", size: 0 };
+  const cf = config.commandField;
+  let pos = cf.offset + cf.size;
+  const fieldBytes = [];
+  for (const field of cmd.fields) {
+    const size = field.type === "bytes" ? field.size : ENC_TYPE_SIZE[field.type];
+    const chunk = new Array(size).fill(0);
+    const value = values ? values[field.name] : undefined;
+    if (field.type === "bytes") {
+      const arr = Array.isArray(value) ? value : [];
+      arr.slice(0, size).forEach((b, i) => { chunk[i] = b & 0xFF; });
+    } else if (field.type === "float32") {
+      const dv = new DataView(new ArrayBuffer(4));
+      dv.setFloat32(0, Number(value) || 0, field.endian !== "big");
+      chunk.set(new Uint8Array(dv.buffer));
+    } else {
+      let raw = fieldRawValue(field, value ?? 0);
+      if (raw < 0) raw += 2 ** (size * 8);
+      writeUint(chunk, 0, raw, size, field.endian === "big");
+    }
+    fieldBytes.push(...chunk);
+    pos += size;
+  }
+  const total = pos + cs.size;
+  const buf = new Array(total).fill(0);
+  (config.frame.header || []).forEach((b, i) => { buf[i] = b; });
+  const cmdVal = parseInt(cmdKey, 16);
+  writeUint(buf, cf.offset, cmdVal, cf.size, true);
+  fieldBytes.forEach((b, i) => { buf[cf.offset + cf.size + i] = b; });
+  if (config.frame.lengthField) {
+    const lf = config.frame.lengthField;
+    const lenVal = total - cs.size - cf.offset;
+    writeUint(buf, lf.offset, lenVal, lf.size, true);
+  }
+  if (cs.type && cs.type !== "none") {
+    const body = buf.slice(0, total - cs.size);
+    const c = encChecksum(cs.type, body);
+    writeUint(buf, total - cs.size, c, cs.size, cs.endian === "big");
+  }
+  return buf;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { encodeFrame };
+}
+
+"use strict";
+// 协议文档导入（CSV 版）：把团队现成的字段表粘进来，一键生成协议配置草稿。
+// 支持的列（中英文表头都认，顺序任意，多余列忽略）：
+// 命令 | 命令名称 | 字段 | 类型 | 大小端 | 倍率 | 偏移 | 单位 | 枚举 | 位定义 | 字节数
+// 枚举/位定义写法：0=关;1=开（分隔符 ; 或 |，等号也可用 :）
+// Excel 里另存为 CSV（UTF-8）后把内容粘进工具即可。
+
+function splitCSVLine(line) {
+  const out = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false; }
+      else cur += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === "," || ch === "\t") { out.push(cur.trim()); cur = ""; }
+    else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+const COL_ALIAS = {
+  command: ["command", "命令", "命令字", "cmd"], commandName: ["command_name", "命令名称", "命令名"],
+  field: ["field", "字段", "字段名", "名称"], type: ["type", "类型", "数据类型"],
+  endian: ["endian", "大小端", "字节序"], scale: ["scale", "倍率", "系数"],
+  offset: ["offset", "偏移", "偏移量"], unit: ["unit", "单位"],
+  choices: ["choices", "枚举", "枚举值"], bits: ["bits", "位定义", "状态位"],
+  size: ["size", "字节数", "长度"],
+};
+const TYPE_ALIAS = {
+  u8: "uint8", uint8: "uint8", "unsigned char": "uint8", i8: "int8", int8: "int8", char: "int8",
+  u16: "uint16", uint16: "uint16", ushort: "uint16", i16: "int16", int16: "int16", short: "int16",
+  u32: "uint32", uint32: "uint32", uint: "uint32", i32: "int32", int32: "int32", int: "int32",
+  float: "float32", float32: "float32", f32: "float32", enum: "enum", "枚举": "enum",
+  bits: "bits", "位": "bits", "状态位": "bits", bytes: "bytes", "字节数组": "bytes",
+};
+
+function parsePairs(text) {
+  if (!text) return undefined;
+  const obj = {};
+  for (const part of String(text).split(/[;|]/)) {
+    const m = part.trim().match(/^([^=:\s]+)\s*[=:]\s*(.+)$/);
+    if (m) obj[m[1].trim()] = m[2].trim();
+  }
+  return Object.keys(obj).length ? obj : undefined;
+}
+
+function importCSV(text, options = {}) {
+  const lines = String(text).replace(/\r\n?/g, "\n").split("\n").filter(l => l.trim() !== "");
+  if (lines.length < 2) throw new Error("CSV 至少要有表头和一行字段");
+  const header = splitCSVLine(lines[0]).map(h => h.toLowerCase());
+  const colIdx = {};
+  for (const [key, aliases] of Object.entries(COL_ALIAS)) {
+    const idx = header.findIndex(h => aliases.includes(h));
+    if (idx >= 0) colIdx[key] = idx;
+  }
+  if (colIdx.command === undefined || colIdx.field === undefined || colIdx.type === undefined) {
+    throw new Error("表头里没找到必需的列：命令、字段、类型（中英文都认）");
+  }
+  const get = (cells, key) => (colIdx[key] !== undefined ? (cells[colIdx[key]] || "") : "");
+  const commands = {};
+  const order = [];
+  for (const line of lines.slice(1)) {
+    const cells = splitCSVLine(line);
+    let cmdKey = get(cells, "command").trim();
+    if (!cmdKey) continue;
+    if (!/^0x/i.test(cmdKey)) cmdKey = "0x" + parseInt(cmdKey, 10).toString(16).toUpperCase().padStart(2, "0");
+    else cmdKey = "0x" + cmdKey.slice(2).toUpperCase();
+    if (!commands[cmdKey]) { commands[cmdKey] = { name: get(cells, "commandName") || cmdKey, fields: [] }; order.push(cmdKey); }
+    const rawType = get(cells, "type").trim().toLowerCase();
+    const type = TYPE_ALIAS[rawType];
+    if (!type) throw new Error(`不认识的类型写法：${get(cells, "type")}（字段 ${get(cells, "field")}）`);
+    const field = { name: get(cells, "field").trim(), type };
+    const endian = get(cells, "endian").trim().toLowerCase();
+    if (type === "uint16" || type === "int16" || type === "uint32" || type === "int32" || type === "float32") {
+      field.endian = (endian.includes("big") || endian.includes("大")) ? "big" : "little";
+    }
+    const scale = get(cells, "scale"); if (scale !== "" && Number(scale) !== 1) field.scale = Number(scale);
+    const off = get(cells, "offset"); if (off !== "" && Number(off) !== 0) field.offset = Number(off);
+    const unit = get(cells, "unit"); if (unit) field.unit = unit;
+    if (type === "enum") { const c = parsePairs(get(cells, "choices")); if (c) field.choices = c; }
+    if (type === "bits") { const b = parsePairs(get(cells, "bits")); if (b) field.bits = b; }
+    if (type === "bytes") { const s = parseInt(get(cells, "size"), 10); field.size = Number.isFinite(s) && s > 0 ? s : 1; }
+    commands[cmdKey].fields.push(field);
+  }
+  if (order.length === 0) throw new Error("没有读到任何字段行");
+  const headerBytes = (options.header || "AA 55").toString().trim().split(/[\s,]+/).filter(Boolean).map(h => parseInt(h, 16));
+  return {
+    name: options.name || "导入的协议",
+    frame: {
+      header: headerBytes,
+      lengthField: { offset: headerBytes.length, size: 1 },
+      checksum: { type: options.checksum || "crc16_modbus", size: 2, endian: "little" },
+    },
+    commandField: { offset: headerBytes.length + 1, size: 1 },
+    commands,
+  };
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { importCSV };
+}
+
+"use strict";
+// 配置校验：团队里多人改配置时，先校验再使用，把错误拦在联调之前。
+// 返回错误字符串数组，空数组表示通过。
+
+const KNOWN_TYPES = ["uint8", "int8", "uint16", "int16", "uint32", "int32", "float32", "enum", "bits", "bytes"];
+const KNOWN_CHECKSUMS = ["crc16_modbus", "sum8", "xor8", "none"];
+
+function validateConfig(config) {
+  const errors = [];
+  if (!config || typeof config !== "object") return ["配置不是一个对象"];
+  const fr = config.frame;
+  if (!fr) errors.push("缺少 frame 帧结构定义");
+  else {
+    if (!Array.isArray(fr.header) || fr.header.length === 0) errors.push("frame.header 帧头为空");
+    else if (fr.header.some(b => typeof b !== "number" || b < 0 || b > 255)) errors.push("frame.header 里有超出 0-255 的值");
+    if (fr.checksum && !KNOWN_CHECKSUMS.includes(fr.checksum.type)) errors.push(`不支持的校验类型：${fr.checksum.type}（v1 支持 ${KNOWN_CHECKSUMS.join("/")}）`);
+    if (fr.lengthField && fr.header && fr.lengthField.offset < fr.header.length) errors.push("长度字段位置和帧头重叠了");
+  }
+  const cf = config.commandField;
+  if (!cf) errors.push("缺少 commandField 命令字段定义");
+  if (!config.commands || Object.keys(config.commands).length === 0) errors.push("commands 里一条命令都没有");
+  for (const [key, cmd] of Object.entries(config.commands || {})) {
+    if (!/^0x[0-9a-fA-F]+$/.test(key)) errors.push(`命令键格式不对：${key}（应为 0x21 这种形式）`);
+    if (!cmd.fields || cmd.fields.length === 0) { errors.push(`命令 ${key} 没有字段`); continue; }
+    const seen = new Set();
+    for (const f of cmd.fields) {
+      if (!f.name) errors.push(`命令 ${key} 里有字段没写名字`);
+      else if (seen.has(f.name)) errors.push(`命令 ${key} 里字段名重复：${f.name}`);
+      seen.add(f.name);
+      if (!KNOWN_TYPES.includes(f.type)) errors.push(`字段 ${f.name} 类型不支持：${f.type}`);
+      if (f.type === "bytes" && (!f.size || f.size <= 0)) errors.push(`字段 ${f.name} 是 bytes 类型，必须给正数的 size`);
+      if (f.scale !== undefined && f.scale === 0) errors.push(`字段 ${f.name} 的 scale 不能是 0`);
+      if (f.type === "enum" && (!f.choices || Object.keys(f.choices).length === 0)) errors.push(`字段 ${f.name} 是 enum 类型，必须给 choices 枚举对照`);
+      if (f.type === "bits") {
+        if (!f.bits || Object.keys(f.bits).length === 0) errors.push(`字段 ${f.name} 是 bits 类型，必须给 bits 位对照`);
+        else for (const bit of Object.keys(f.bits)) if (Number(bit) < 0 || Number(bit) > 7) errors.push(`字段 ${f.name} 的位定义超出 0-7：bit${bit}`);
+      }
+    }
+  }
+  return errors;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { validateConfig };
+}
+
 
 // ---------- 工具状态 ----------
 let config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 let recording = false;
 let recorded = [];   // [{bytes:[...], at: timestamp}]
 let simTimer = null;
+let serialWriter = null;
+let bleWriter = null;
 let replayTimer = null;
 
 const $ = id => document.getElementById(id);
@@ -559,8 +841,12 @@ $("btnReplay").addEventListener("click", () => {
 // ---------- 配置 ----------
 $("btnApply").addEventListener("click", () => {
   try {
-    config = JSON.parse($("config").value);
-    $("cfgStatus").textContent = "配置已应用：" + (config.name || "未命名");
+    const parsed = JSON.parse($("config").value);
+    const errs = validateConfig(parsed);
+    if (errs.length) { $("cfgStatus").textContent = "配置有问题，未应用： " + errs.join("；"); return; }
+    config = parsed;
+    $("cfgStatus").textContent = "配置已应用（校验通过）：" + (config.name || "未命名");
+    refreshSendCmds();
   } catch (e) { $("cfgStatus").textContent = "配置 JSON 有误：" + e.message; }
 });
 $("btnResetCfg").addEventListener("click", () => {
@@ -604,7 +890,8 @@ $("btnSerial").addEventListener("click", async () => {
     const port = await navigator.serial.requestPort();
     const baud = parseInt(prompt("波特率", "115200") || "115200", 10);
     await port.open({ baudRate: baud });
-    $("connStatus").textContent = "串口已连接，接收中";
+    serialWriter = port.writable.getWriter();
+    $("connStatus").textContent = "串口已连接，接收中（也可以在第 9 块拼帧发送）";
     const feed = makeFrameSplitter(render);
     const reader = port.readable.getReader();
     while (true) {
@@ -628,6 +915,7 @@ $("btnBle").addEventListener("click", async () => {
     for (const svc of services) {
       const chars = await svc.getCharacteristics();
       for (const ch of chars) {
+        if (!bleWriter && (ch.properties.write || ch.properties.writeWithoutResponse)) bleWriter = ch;
         if (ch.properties.notify || ch.properties.indicate) {
           await ch.startNotifications();
           ch.addEventListener("characteristicvaluechanged", ev => {
@@ -640,6 +928,75 @@ $("btnBle").addEventListener("click", async () => {
     $("connStatus").textContent = found ? `蓝牙已连接，已订阅 ${found} 个通知特征值，接收中` : "蓝牙已连接，但没找到可通知的特征值，需要按你的设备指定服务和特征值 UUID";
   } catch (e) { $("connStatus").textContent = "蓝牙连接失败或已取消：" + e.message; }
 });
+
+// ---------- CSV 导入 ----------
+$("btnCsvSample").addEventListener("click", () => {
+  $("csvIn").value = ["命令,命令名称,字段,类型,大小端,倍率,偏移,单位,枚举,位定义",
+    "0x21,状态上报,电机转速,int16,little,,,,",
+    "0x21,状态上报,温度,int16,little,0.1,,℃,,",
+    "0x21,状态上报,电量,uint8,,,,%,,",
+    "0x21,状态上报,状态位,bits,,,,,,0=运行;1=故障;2=充电"].join("\n");
+});
+$("btnCsvImport").addEventListener("click", () => {
+  try {
+    const cfg = importCSV($("csvIn").value, {});
+    const errs = validateConfig(cfg);
+    if (errs.length) { $("csvStatus").textContent = "生成的配置有问题：" + errs.join("；"); return; }
+    config = cfg;
+    $("config").value = JSON.stringify(cfg, null, 2);
+    $("cfgStatus").textContent = "配置已应用（CSV 导入，校验通过）：" + (cfg.name || "");
+    $("csvStatus").textContent = "导入成功，共 " + Object.keys(cfg.commands).length + " 条命令，已填入第 5 块，可继续修改";
+    refreshSendCmds();
+  } catch (e) { $("csvStatus").textContent = "导入失败：" + e.message; }
+});
+
+// ---------- 拼帧发送 ----------
+function refreshSendCmds() {
+  const sel = $("sendCmd");
+  sel.innerHTML = "";
+  for (const [key, cmd] of Object.entries(config.commands || {})) {
+    const opt = document.createElement("option");
+    opt.value = key; opt.textContent = key + " " + (cmd.name || "");
+    sel.appendChild(opt);
+  }
+}
+function fillSendTemplate() {
+  const cmd = (config.commands || {})[$("sendCmd").value];
+  if (!cmd) return;
+  const obj = {};
+  for (const f of cmd.fields) {
+    if (f.type === "bits") obj[f.name] = [];
+    else if (f.type === "enum") obj[f.name] = f.choices ? Object.values(f.choices)[0] : 0;
+    else if (f.type === "bytes") obj[f.name] = new Array(f.size || 1).fill(0);
+    else obj[f.name] = 0;
+  }
+  $("sendVals").value = JSON.stringify(obj, null, 2);
+}
+$("btnSendFill").addEventListener("click", fillSendTemplate);
+$("sendCmd").addEventListener("change", fillSendTemplate);
+let lastBuilt = null;
+$("btnBuild").addEventListener("click", () => {
+  try {
+    const vals = JSON.parse($("sendVals").value || "{}");
+    lastBuilt = encodeFrame(config, $("sendCmd").value, vals);
+    $("sendHex").textContent = toHex(lastBuilt);
+    $("sendStatus").textContent = "已拼帧，共 " + lastBuilt.length + " 字节（长度与校验已自动计算）";
+  } catch (e) { $("sendStatus").textContent = "拼帧失败：" + e.message; }
+});
+$("btnSendSerial").addEventListener("click", async () => {
+  if (!lastBuilt) { $("sendStatus").textContent = "先点拼帧"; return; }
+  if (!serialWriter) { $("sendStatus").textContent = "串口还没连接，先点上方连接串口"; return; }
+  try { await serialWriter.write(new Uint8Array(lastBuilt)); $("sendStatus").textContent = "已通过串口发出 " + lastBuilt.length + " 字节"; }
+  catch (e) { $("sendStatus").textContent = "串口发送失败：" + e.message; }
+});
+$("btnSendBle").addEventListener("click", async () => {
+  if (!lastBuilt) { $("sendStatus").textContent = "先点拼帧"; return; }
+  if (!bleWriter) { $("sendStatus").textContent = "蓝牙还没连接，或该设备没有可写特征值"; return; }
+  try { await bleWriter.writeValue(new Uint8Array(lastBuilt)); $("sendStatus").textContent = "已通过蓝牙发出 " + lastBuilt.length + " 字节"; }
+  catch (e) { $("sendStatus").textContent = "蓝牙发送失败：" + e.message; }
+});
+refreshSendCmds();
+fillSendTemplate();
 
 // ---------- 代码生成 ----------
 let genFilename = "";
