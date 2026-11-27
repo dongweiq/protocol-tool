@@ -10,14 +10,14 @@ const html = fs.readFileSync(path.join(__dirname, "..", "dist", "protocol-tool.h
 let failed = 0;
 function check(name, cond) { if (cond) console.log("  ✓ " + name); else { failed++; console.log("  ✗ " + name); } }
 
-check("构建占位符已全部替换", !/__PARSER__|__CODEGEN__|__ENCODER__|__IMPORTER__|__VALIDATE__|__CONFIG__/.test(html));
+check("构建占位符已全部替换", !/__PARSER__|__CODEGEN__|__ENCODER__|__IMPORTER__|__XLSX__|__VALIDATE__|__CONFIG__/.test(html));
 const m = html.match(/<script>([\s\S]*)<\/script>/);
 check("能提取出内联脚本", !!m);
 const tmp = "/tmp/protocol-tool-dist-check.js";
 fs.writeFileSync(tmp, m[1]);
 try { execSync(`node --check ${tmp}`, { stdio: "pipe" }); check("内联脚本语法检查通过（无同名声明冲突）", true); }
 catch (e) { check("内联脚本语法检查通过（无同名声明冲突）：" + e.stderr.toString().split("\n")[0], false); }
-check("页面包含 v0.3 全部功能块", ["btnCsvImport", "btnBuild", "btnSendSerial", "btnSendBle", "sendCmd"].every(id => html.includes(id)));
+check("页面包含 v0.4 全部功能块", ["btnCsvImport", "btnXlsxImport", "xlsxFile", "btnBuild", "btnSendSerial", "btnSendBle", "sendCmd"].every(id => html.includes(id)));
 
 console.log(failed ? `\n结果：${failed} 失败` : "\n全部 dist 测试通过");
 process.exit(failed ? 1 : 0);

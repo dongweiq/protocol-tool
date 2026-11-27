@@ -15,7 +15,7 @@ App、固件、测试三边往往各写一遍解析代码，协议一改就对�
 - 协议库：调好的配置起名字、写版本备注保存，团队成员一键切换到同一份协议
 - 录制 / 回放：联调过程全程录制，回去重放复现问题
 - 拼帧发送：解析的逆操作，在工具里填字段值就能拼出一帧完整数据（长度、校验自动计算），可直接通过串口 / 蓝牙发给设备，不用手算字节
-- 协议文档导入：把现成的 Excel 协议表另存为 CSV 粘进来，一键生成协议配置草稿，团队落地不用从零手写配置
+- 协议文档导入：把现成的 Excel 协议表直接选 .xlsx 文件导入（也可以另存为 CSV 粘进来），一键生成协议配置草稿，团队落地不用从零手写配置
 - 配置校验：应用配置前自动检查（字段重名、类型不支持、位定义越界等），把低级错误拦在联调之前
 - 模拟设备：没有硬件在手边时，按配置自动生成数据帧跑通全流程
 
@@ -51,6 +51,9 @@ node tests/codegen.test.js
 # v0.3 新功能测试（拼帧编码器 / 拆帧器 / 配置校验 / CSV 导入）
 node tests/v03.test.js
 
+# v0.4 新功能测试（Excel .xlsx 直接导入）
+node tests/xlsx.test.js
+
 # 成品回归测试（打包单文件语法与完整性）
 node tests/dist.test.js
 
@@ -63,7 +66,8 @@ python3 build.py   # 产物在 dist/protocol-tool.html
 - `src/parser.js` 协议解析引擎（浏览器与 Node 通用）
 - `src/encoder.js` 拼帧编码器（解析的逆操作）
 - `src/framing.js` 流式拆帧器（处理粘包 / 半包 / 杂字节）
-- `src/importer.js` CSV 协议表导入器
+- `src/importer.js` CSV 协议表导入器（行数据 -> 配置，CSV 与 xlsx 共用）
+- `src/xlsx.js` Excel（.xlsx）直接导入器（zip 解包 + 工作表解析，零外部依赖）
 - `src/validate.js` 配置校验器
 - `src/codegen.js` 代码与文档生成器（JS / Python / C / Markdown）
 - `web/template.html` 网页界面模板
@@ -73,6 +77,7 @@ python3 build.py   # 产物在 dist/protocol-tool.html
 
 ## 版本
 
+- v0.4：Excel（.xlsx）协议表直接导入，不用再另存为 CSV；CSV 导入逻辑抽成行数据 -> 配置，与 xlsx 共用同一套生成逻辑（详见 CHANGELOG.md）
 - v0.3：拼帧发送（编码器 + 串口/蓝牙发送）、CSV 协议表导入、配置校验、流式拆帧模块化；修复 v0.2 单文件打包时同名声明导致整页脚本报错的隐患，并加了成品回归测试防复发（详见 CHANGELOG.md）
 - v0.2 团队版：一处配置生成三端代码 + 协议文档；协议库（多配置保存 / 切换 / 版本备注）
 - v0.1 自用版：配置驱动解析、模拟发送、录制回放、Web Serial / Web Bluetooth 连接

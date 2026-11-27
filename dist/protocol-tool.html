@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>协议解析工具 v0.3 团队版</title>
+<title>协议解析工具 v0.4 团队版</title>
 <style>
   body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
   header { background: #1f2733; color: #fff; padding: 12px 16px; font-size: 17px; font-weight: 600; }
@@ -28,7 +28,7 @@
 </style>
 </head>
 <body>
-<header>协议解析工具 <small>v0.3 团队版 · 配置驱动 · 数据只在本机处理</small></header>
+<header>协议解析工具 <small>v0.4 团队版 · 配置驱动 · 数据只在本机处理</small></header>
 <main>
   <section>
     <h3>1. 连接设备（可选，先用模拟或粘贴也能跑通全流程）</h3>
@@ -91,9 +91,13 @@
   </section>
 
   <section>
-    <h3>8. 协议文档导入（CSV 字段表 -> 协议配置）</h3>
-    <p class="hint">把 Excel 协议表另存为 CSV（UTF-8）后把内容粘到这里，一键生成配置草稿。表头认中英文：命令、命令名称、字段、类型、大小端、倍率、偏移、单位、枚举、位定义。枚举和位定义写成 0=关;1=开 这种格式。帧头默认 AA 55、校验默认 CRC16-Modbus，导入后可在第 5 块改。</p>
-    <textarea id="csvIn" spellcheck="false" style="min-height:120px;" placeholder="把 CSV 内容粘到这里，或点右边按钮先看示例"></textarea>
+    <h3>8. 协议文档导入（Excel / CSV 字段表 -> 协议配置）</h3>
+    <p class="hint">直接选 .xlsx 文件导入，不用再另存为 CSV（只读第一个工作表，表头认中英文：命令、命令名称、字段、类型、大小端、倍率、偏移、单位、枚举、位定义）。也可以把表另存为 CSV（UTF-8）后粘到下面。枚举和位定义写成 0=关;1=开 这种格式。帧头默认 AA 55、校验默认 CRC16-Modbus，导入后可在第 5 块改。</p>
+    <div class="row">
+      <input type="file" id="xlsxFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="flex:1;min-width:200px;">
+      <button id="btnXlsxImport" class="primary">导入 xlsx 文件</button>
+    </div>
+    <textarea id="csvIn" spellcheck="false" style="min-height:120px;margin-top:8px;" placeholder="把 CSV 内容粘到这里，或点右边按钮先看示例"></textarea>
     <div class="row">
       <button id="btnCsvSample">填入示例 CSV</button>
       <button id="btnCsvImport" class="primary">导入并生成配置</button>
@@ -655,7 +659,13 @@ function parsePairs(text) {
 function importCSV(text, options = {}) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n").filter(l => l.trim() !== "");
   if (lines.length < 2) throw new Error("CSV 至少要有表头和一行字段");
-  const header = splitCSVLine(lines[0]).map(h => h.toLowerCase());
+  return rowsToConfig(lines.map(splitCSVLine), options);
+}
+
+// 行数据 -> 协议配置（CSV 与 xlsx 共用：xlsx 解析成同样的行数据结构后走这里）
+function rowsToConfig(rows, options = {}) {
+  if (!rows || rows.length < 2) throw new Error("表格至少要有表头和一行字段");
+  const header = rows[0].map(h => String(h == null ? "" : h).trim().toLowerCase());
   const colIdx = {};
   for (const [key, aliases] of Object.entries(COL_ALIAS)) {
     const idx = header.findIndex(h => aliases.includes(h));
@@ -664,11 +674,10 @@ function importCSV(text, options = {}) {
   if (colIdx.command === undefined || colIdx.field === undefined || colIdx.type === undefined) {
     throw new Error("表头里没找到必需的列：命令、字段、类型（中英文都认）");
   }
-  const get = (cells, key) => (colIdx[key] !== undefined ? (cells[colIdx[key]] || "") : "");
+  const get = (cells, key) => (colIdx[key] !== undefined ? String(cells[colIdx[key]] == null ? "" : cells[colIdx[key]]) : "");
   const commands = {};
   const order = [];
-  for (const line of lines.slice(1)) {
-    const cells = splitCSVLine(line);
+  for (const cells of rows.slice(1)) {
     let cmdKey = get(cells, "command").trim();
     if (!cmdKey) continue;
     if (!/^0x/i.test(cmdKey)) cmdKey = "0x" + parseInt(cmdKey, 10).toString(16).toUpperCase().padStart(2, "0");
@@ -705,7 +714,195 @@ function importCSV(text, options = {}) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { importCSV };
+  module.exports = { importCSV, rowsToConfig };
+}
+
+"use strict";
+// Excel（.xlsx）文件直接导入：浏览器里直接选 .xlsx 文件读出字段表生成配置，不用再另存为 CSV。
+// 零外部依赖：xlsx 本质是 zip，
+//  - 解 zip：读中央目录定位文件，stored 直接取、deflate 用 DecompressionStream 解（Node 下用 zlib 兜底）；
+//  - 读表：sharedStrings.xml + 第一个工作表 sheet XML，用纯字符串扫描解析（不依赖 DOMParser，
+//    浏览器与 Node 走同一份代码，测试可直接跑）。
+// 解析结果是与 CSV 导入相同的行数据结构（字符串二维数组），再复用 importer.js 的 rowsToConfig 生成配置。
+
+function xlsxInflateRaw(bytes) {
+  if (typeof DecompressionStream !== "undefined") {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Response(stream).arrayBuffer().then(buf => new Uint8Array(buf));
+  }
+  if (typeof require === "function") {
+    return Promise.resolve(require("zlib").inflateRawSync(Buffer.from(bytes)));
+  }
+  return Promise.reject(new Error("当前环境不支持解压 xlsx（需要 DecompressionStream）"));
+}
+
+// 读 zip 中央目录：{ 文件名: { method, compressedSize, localHeaderOffset } }
+function xlsxReadCentralDirectory(buf) {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("不是有效的 zip / xlsx 文件（找不到中央目录）");
+  const count = view.getUint16(eocd + 10, true);
+  let off = view.getUint32(eocd + 16, true);
+  const entries = {};
+  const dec = new TextDecoder("utf-8");
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(off, true) !== 0x02014b50) throw new Error("xlsx 中央目录损坏");
+    const method = view.getUint16(off + 10, true);
+    const compressedSize = view.getUint32(off + 20, true);
+    const nameLen = view.getUint16(off + 28, true);
+    const extraLen = view.getUint16(off + 30, true);
+    const commentLen = view.getUint16(off + 32, true);
+    const localHeaderOffset = view.getUint32(off + 42, true);
+    const name = dec.decode(buf.subarray(off + 46, off + 46 + nameLen));
+    entries[name] = { method, compressedSize, localHeaderOffset };
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+async function xlsxReadEntry(buf, entry) {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const off = entry.localHeaderOffset;
+  if (view.getUint32(off, true) !== 0x04034b50) throw new Error("xlsx 本地文件头损坏");
+  const nameLen = view.getUint16(off + 26, true);
+  const extraLen = view.getUint16(off + 28, true);
+  const dataStart = off + 30 + nameLen + extraLen;
+  const raw = buf.subarray(dataStart, dataStart + entry.compressedSize);
+  if (entry.method === 0) return raw;
+  if (entry.method === 8) return xlsxInflateRaw(raw);
+  throw new Error("xlsx 里有不支持的压缩方式（method=" + entry.method + "）");
+}
+
+function xlsxUnescapeXml(s) {
+  return String(s).replace(/&(#x[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos);/g, (m, e) => {
+    if (e === "amp") return "&";
+    if (e === "lt") return "<";
+    if (e === "gt") return ">";
+    if (e === "quot") return '"';
+    if (e === "apos") return "'";
+    if (e[0] === "#") {
+      const code = e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+    }
+    return m;
+  });
+}
+
+function xlsxAttr(tag, name) {
+  const m = tag.match(new RegExp("\\b" + name + '\\s*=\\s*"([^"]*)"'));
+  return m ? m[1] : "";
+}
+
+// sharedStrings.xml -> 字符串数组
+function xlsxParseSharedStrings(xml) {
+  const out = [];
+  const re = /<si>([\s\S]*?)<\/si>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    let text = "";
+    const tre = /<t[^>]*>([\s\S]*?)<\/t>/g;
+    let t;
+    while ((t = tre.exec(m[1]))) text += xlsxUnescapeXml(t[1]);
+    out.push(text);
+  }
+  return out;
+}
+
+function xlsxColToIndex(ref) {
+  const letters = ref.replace(/[0-9]+$/, "").toUpperCase();
+  let idx = 0;
+  for (const ch of letters) idx = idx * 26 + (ch.charCodeAt(0) - 64);
+  return idx - 1;
+}
+
+// 工作表 XML -> 行数据（字符串二维数组，空单元格补 ""，全空行去掉）
+function xlsxParseSheetXml(xml, sharedStrings) {
+  const rows = [];
+  const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+  let rm;
+  while ((rm = rowRe.exec(xml))) {
+    const row = [];
+    const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+    let cm;
+    while ((cm = cellRe.exec(rm[1]))) {
+      const attrs = cm[1];
+      const ref = xlsxAttr(attrs, "r");
+      const col = ref ? xlsxColToIndex(ref) : row.length;
+      while (row.length < col) row.push("");
+      const type = xlsxAttr(attrs, "t");
+      const inner = cm[2] || "";
+      let value = "";
+      if (type === "s") {
+        const vm = inner.match(/<v>([\s\S]*?)<\/v>/);
+        const idx = vm ? parseInt(vm[1], 10) : NaN;
+        value = Number.isFinite(idx) ? (sharedStrings[idx] || "") : "";
+      } else if (type === "inlineStr") {
+        const tm = inner.match(/<t[^>]*>([\s\S]*?)<\/t>/);
+        value = tm ? xlsxUnescapeXml(tm[1]) : "";
+      } else {
+        const vm = inner.match(/<v>([\s\S]*?)<\/v>/);
+        value = vm ? xlsxUnescapeXml(vm[1]) : "";
+      }
+      row[col] = value;
+    }
+    if (row.some(c => String(c).trim() !== "")) rows.push(row);
+  }
+  return rows;
+}
+
+// 找第一个工作表的文件名：workbook.xml + rels，失败时退回 xl/worksheets/sheet1.xml
+async function xlsxFirstSheetName(buf, entries) {
+  try {
+    if (!entries["xl/workbook.xml"] || !entries["xl/_rels/workbook.xml.rels"]) return "xl/worksheets/sheet1.xml";
+    const wb = new TextDecoder("utf-8").decode(await xlsxReadEntry(buf, entries["xl/workbook.xml"]));
+    const sheetM = wb.match(/<sheet\b[^>]*>/);
+    if (!sheetM) return "xl/worksheets/sheet1.xml";
+    const rid = xlsxAttr(sheetM[0], "r:id") || xlsxAttr(sheetM[0], "id");
+    const rels = new TextDecoder("utf-8").decode(await xlsxReadEntry(buf, entries["xl/_rels/workbook.xml.rels"]));
+    const relRe = /<Relationship\b[^>]*>/g;
+    let rm;
+    while ((rm = relRe.exec(rels))) {
+      if (xlsxAttr(rm[0], "Id") === rid) {
+        const target = xlsxAttr(rm[0], "Target");
+        if (target) return target.startsWith("xl/") ? target : "xl/" + target.replace(/^\//, "");
+      }
+    }
+  } catch (e) { /* 走兜底 */ }
+  return "xl/worksheets/sheet1.xml";
+}
+
+// .xlsx 文件内容（ArrayBuffer / Uint8Array）-> 行数据
+async function parseXlsx(data) {
+  const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
+  if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error("不是 xlsx 文件（文件头不是 zip）");
+  const entries = xlsxReadCentralDirectory(buf);
+  let sharedStrings = [];
+  if (entries["xl/sharedStrings.xml"]) {
+    const xml = new TextDecoder("utf-8").decode(await xlsxReadEntry(buf, entries["xl/sharedStrings.xml"]));
+    sharedStrings = xlsxParseSharedStrings(xml);
+  }
+  const sheetName = await xlsxFirstSheetName(buf, entries);
+  if (!entries[sheetName]) throw new Error("xlsx 里找不到工作表：" + sheetName);
+  const sheetXml = new TextDecoder("utf-8").decode(await xlsxReadEntry(buf, entries[sheetName]));
+  const rows = xlsxParseSheetXml(sheetXml, sharedStrings);
+  if (rows.length < 2) throw new Error("工作表里至少要有表头和一行字段");
+  return rows;
+}
+
+// .xlsx 文件内容 -> 协议配置（与 CSV 导入同一套行数据结构、同一套生成逻辑）
+async function importXlsx(data, options = {}) {
+  const rows = await parseXlsx(data);
+  const rowsToConfig = (typeof globalThis !== "undefined" && typeof globalThis.rowsToConfig === "function")
+    ? globalThis.rowsToConfig
+    : require("./importer.js").rowsToConfig;
+  return rowsToConfig(rows, options);
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { parseXlsx, importXlsx, xlsxParseSheetXml, xlsxParseSharedStrings };
 }
 
 "use strict";
@@ -945,6 +1142,21 @@ $("btnCsvImport").addEventListener("click", () => {
     config = cfg;
     $("config").value = JSON.stringify(cfg, null, 2);
     $("cfgStatus").textContent = "配置已应用（CSV 导入，校验通过）：" + (cfg.name || "");
+    $("csvStatus").textContent = "导入成功，共 " + Object.keys(cfg.commands).length + " 条命令，已填入第 5 块，可继续修改";
+    refreshSendCmds();
+  } catch (e) { $("csvStatus").textContent = "导入失败：" + e.message; }
+});
+$("btnXlsxImport").addEventListener("click", async () => {
+  const file = $("xlsxFile").files && $("xlsxFile").files[0];
+  if (!file) { $("csvStatus").textContent = "先点左边的框选一个 .xlsx 文件"; return; }
+  $("csvStatus").textContent = "正在读取 " + file.name + " …";
+  try {
+    const cfg = await importXlsx(await file.arrayBuffer(), { name: file.name.replace(/\.xlsx$/i, "") });
+    const errs = validateConfig(cfg);
+    if (errs.length) { $("csvStatus").textContent = "生成的配置有问题：" + errs.join("；"); return; }
+    config = cfg;
+    $("config").value = JSON.stringify(cfg, null, 2);
+    $("cfgStatus").textContent = "配置已应用（xlsx 导入，校验通过）：" + (cfg.name || "");
     $("csvStatus").textContent = "导入成功，共 " + Object.keys(cfg.commands).length + " 条命令，已填入第 5 块，可继续修改";
     refreshSendCmds();
   } catch (e) { $("csvStatus").textContent = "导入失败：" + e.message; }

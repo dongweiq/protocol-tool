@@ -50,7 +50,13 @@ function parsePairs(text) {
 function importCSV(text, options = {}) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n").filter(l => l.trim() !== "");
   if (lines.length < 2) throw new Error("CSV 至少要有表头和一行字段");
-  const header = splitCSVLine(lines[0]).map(h => h.toLowerCase());
+  return rowsToConfig(lines.map(splitCSVLine), options);
+}
+
+// 行数据 -> 协议配置（CSV 与 xlsx 共用：xlsx 解析成同样的行数据结构后走这里）
+function rowsToConfig(rows, options = {}) {
+  if (!rows || rows.length < 2) throw new Error("表格至少要有表头和一行字段");
+  const header = rows[0].map(h => String(h == null ? "" : h).trim().toLowerCase());
   const colIdx = {};
   for (const [key, aliases] of Object.entries(COL_ALIAS)) {
     const idx = header.findIndex(h => aliases.includes(h));
@@ -59,11 +65,10 @@ function importCSV(text, options = {}) {
   if (colIdx.command === undefined || colIdx.field === undefined || colIdx.type === undefined) {
     throw new Error("表头里没找到必需的列：命令、字段、类型（中英文都认）");
   }
-  const get = (cells, key) => (colIdx[key] !== undefined ? (cells[colIdx[key]] || "") : "");
+  const get = (cells, key) => (colIdx[key] !== undefined ? String(cells[colIdx[key]] == null ? "" : cells[colIdx[key]]) : "");
   const commands = {};
   const order = [];
-  for (const line of lines.slice(1)) {
-    const cells = splitCSVLine(line);
+  for (const cells of rows.slice(1)) {
     let cmdKey = get(cells, "command").trim();
     if (!cmdKey) continue;
     if (!/^0x/i.test(cmdKey)) cmdKey = "0x" + parseInt(cmdKey, 10).toString(16).toUpperCase().padStart(2, "0");
@@ -100,5 +105,5 @@ function importCSV(text, options = {}) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { importCSV };
+  module.exports = { importCSV, rowsToConfig };
 }
