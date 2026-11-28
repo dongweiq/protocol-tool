@@ -1,5 +1,16 @@
 # 更新记录
 
+## v0.5（2026-11-28）
+
+GitHub Pages 在线版，打开链接就能试用，不用下载：
+
+- **在线入口**：https://dongweiq.github.io/protocol-tool/ —— dist/protocol-tool.html 以 `index.html` 发布到 `gh-pages` 分支，仓库开启 GitHub Pages（来源：gh-pages 分支根目录）。
+- **README 同步**：顶部与“快速开始”都放了在线版链接，本地打开 `dist/protocol-tool.html` 仍可用。
+- **以后每次发版同步更新**：新增 `scripts/publish-pages.sh`，发版后执行一次即可把最新成品同步到在线版（用 git worktree 操作 gh-pages 分支，不污染主分支工作区）。
+- **回归检查**：tests/dist.test.js 新增两项——页面标题已是 v0.5、README 包含在线版入口链接；以后版本号或入口链接漏改会被测试拦下。
+
+测试总览：解析 6、代码生成三端一致性 4、v0.3 新功能 10、xlsx 导入 11、成品回归 6，全部通过。
+
 ## v0.4（2026-11-27）
 
 Excel（.xlsx）协议表直接导入，团队落地不用再另存为 CSV：

@@ -1,5 +1,7 @@
 # 协议解析工具（Protocol Tool）
 
+**在线试用：https://dongweiq.github.io/protocol-tool/**（打开即用，不用下载）
+
 配置驱动的串口 / 蓝牙私有协议解析工具，面向硬件团队的联调场景。
 
 ## 它解决什么问题
@@ -25,7 +27,7 @@ App、固件、测试三边往往各写一遍解析代码，协议一改就对�
 
 不需要安装、不需要服务器：
 
-1. 用电脑版 Chrome 打开 `dist/protocol-tool.html`（单文件，含全部功能）
+1. 直接打开在线版 https://dongweiq.github.io/protocol-tool/，或用电脑版 Chrome 打开本地 `dist/protocol-tool.html`（单文件，含全部功能）
 2. 页面会自动解析一帧演示数据；点“开始模拟设备发送”可以看实时解析
 3. 在第 5 块粘贴或修改协议配置（JSON），点“应用配置”立即生效
 4. 在第 6 块生成你需要的代码或文档，下载使用
@@ -77,6 +79,7 @@ python3 build.py   # 产物在 dist/protocol-tool.html
 
 ## 版本
 
+- v0.5：GitHub Pages 在线版——打开链接就能试用，不用下载；每次发版用 `scripts/publish-pages.sh` 同步更新在线版（详见 CHANGELOG.md）
 - v0.4：Excel（.xlsx）协议表直接导入，不用再另存为 CSV；CSV 导入逻辑抽成行数据 -> 配置，与 xlsx 共用同一套生成逻辑（详见 CHANGELOG.md）
 - v0.3：拼帧发送（编码器 + 串口/蓝牙发送）、CSV 协议表导入、配置校验、流式拆帧模块化；修复 v0.2 单文件打包时同名声明导致整页脚本报错的隐患，并加了成品回归测试防复发（详见 CHANGELOG.md）
 - v0.2 团队版：一处配置生成三端代码 + 协议文档；协议库（多配置保存 / 切换 / 版本备注）

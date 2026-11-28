@@ -17,7 +17,10 @@ const tmp = "/tmp/protocol-tool-dist-check.js";
 fs.writeFileSync(tmp, m[1]);
 try { execSync(`node --check ${tmp}`, { stdio: "pipe" }); check("内联脚本语法检查通过（无同名声明冲突）", true); }
 catch (e) { check("内联脚本语法检查通过（无同名声明冲突）：" + e.stderr.toString().split("\n")[0], false); }
-check("页面包含 v0.4 全部功能块", ["btnCsvImport", "btnXlsxImport", "xlsxFile", "btnBuild", "btnSendSerial", "btnSendBle", "sendCmd"].every(id => html.includes(id)));
+check("页面包含 v0.5 全部功能块", ["btnCsvImport", "btnXlsxImport", "xlsxFile", "btnBuild", "btnSendSerial", "btnSendBle", "sendCmd"].every(id => html.includes(id)));
+check("页面标题已是 v0.5", html.includes("<title>协议解析工具 v0.5"));
+const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf-8");
+check("README 包含在线版入口链接", readme.includes("https://dongweiq.github.io/protocol-tool/"));
 
 console.log(failed ? `\n结果：${failed} 失败` : "\n全部 dist 测试通过");
 process.exit(failed ? 1 : 0);
